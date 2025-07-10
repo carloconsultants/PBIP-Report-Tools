@@ -157,13 +157,12 @@
                 "Unknown Page";
 
               // Extract visual title and type
-              const title =
-                visualJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(
-                  /'/g,
-                  ""
-                ) ||
-                visualJson.name ||
-                "Unknown Visual";
+              const titleFromContainer = visualJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(
+                /'/g,
+                ""
+              ) || "";
+              const nameFromVisual = visualJson.name || "";
+              const title = `${titleFromContainer} / ${nameFromVisual}`;
               const visualType =
                 visualJson.visual?.visualType || "Unknown Type";
 
