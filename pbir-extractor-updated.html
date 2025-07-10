@@ -67,8 +67,8 @@
     <table id="resultsTable">
       <thead>
         <tr>
-          <th>Page Name</th>
-          <th>Visual Name</th>
+          <th>Page Name / guid</th>
+          <th>Visual Name / guid</th>
           <th>Visual Type</th>
           <th>Measure Used in the Condition</th>
           <th>Number of Conditional Formatting Items</th>
@@ -101,7 +101,7 @@
 
         const totalFiles = folderInput.files.length;
         statusDiv.innerText = `Processing file 0/${totalFiles}`;
-        const pageMap = new Map(); // Map page folder to page name
+        const pageMap = new Map(); // Map page folder to page name / guid
         let filesProcessed = 0;
 
         // First pass: Collect page names from page.json
@@ -120,9 +120,12 @@
               } catch (e) {
                 continue;
               }
-              const pageName = pageJson.displayName || "Unknown Page";
+              const pageName = pageJson.displayName || "";
               const pageFolder = filePath.split("/").slice(0, -1).join("/");
-              pageMap.set(pageFolder, pageName);
+              // Extract the GUID from the folder path (last part of the path)
+              const pageGuid = filePath.split("/").slice(-2, -1)[0] || "";
+              // Store both the display name and GUID
+              pageMap.set(pageFolder, { displayName: pageName, guid: pageGuid });
             } catch (e) {
               continue;
             }
@@ -151,10 +154,19 @@
               const pathParts = filePath.split("/");
               const visualsIndex = pathParts.indexOf("visuals");
               const pageFolder = pathParts.slice(0, visualsIndex).join("/");
-              const pageName =
-                pageMap.get(pageFolder) ||
-                pathParts[visualsIndex - 1] ||
-                "Unknown Page";
+              
+              // Get both display name and GUID
+              const pageInfo = pageMap.get(pageFolder);
+              let pageName;
+              
+              if (pageInfo) {
+                // Concatenate display name and GUID
+                pageName = `${pageInfo.displayName} / ${pageInfo.guid}`;
+              } else {
+                // Fallback: use the folder name as GUID
+                const pageGuid = pathParts[visualsIndex - 1] || "";
+                pageName = ` / ${pageGuid}`;
+              }
 
               // Extract visual title and type
               const titleFromContainer = visualJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(
@@ -322,7 +334,7 @@
           return;
         }
         const headers = [
-          "Page Name,Visual Name,Visual Type,Measure Used in the Condition,Number of Conditional Formatting Items,Conditional Formatting Type,Formatting Applied to Field",
+          "Page Name / guid,Visual Name / guid,Visual Type,Measure Used in the Condition,Number of Conditional Formatting Items,Conditional Formatting Type,Formatting Applied to Field",
         ];
         const csvRows = results.map(
           (result) =>
