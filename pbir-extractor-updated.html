@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PBIP Conditional Formatting Extractor</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-top: 20px;
+      }
+      th,
+      td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        text-align: left;
+      }
+      th {
+        background-color: #f2f2f2;
+      }
+      button {
+        padding: 10px;
+        margin: 10px 0;
+      }
+      #progress {
+        margin-top: 10px;
+      }
+      #progressBarContainer {
+        width: 100%;
+        background-color: #f3f3f3;
+        border: 1px solid #ddd;
+        height: 20px;
+        margin-top: 5px;
+      }
+      #progressBar {
+        width: 0%;
+        height: 100%;
+        background-color: #4caf50;
+        transition: width 0.3s;
+      }
+      #status {
+        margin-top: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>PBIP Conditional Formatting Extractor</h2>
+    <p>
+      Select the folder containing the page definitions. '{report_name}.Report' or 'definition' folder. This folder contains 'pages'
+      subfolders and each page folder then has 'visuals' subfolders.
+    </p>
+    <input type="file" id="folderInput" webkitdirectory directory multiple />
+    <button onclick="processFolder()">Process PBIP Folder</button>
+    <button onclick="exportToCSV()" disabled id="exportButton">
+      Export to CSV
+    </button>
+    <div id="progress">
+      <div id="progressBarContainer">
+        <div id="progressBar"></div>
+      </div>
+      <div id="status">No files processed yet.</div>
+    </div>
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>Page Name</th>
+          <th>Visual Name</th>
+          <th>Visual Type</th>
+          <th>Measure Used in the Condition</th>
+          <th>Number of Conditional Formatting Items</th>
+          <th>Conditional Formatting Type</th>
+          <th>Applied to Field</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+
+    <script>
+      let results = []; // Store results for CSV export
+
+      async function processFolder() {
+        const folderInput = document.getElementById("folderInput");
+        const tableBody = document.getElementById("tableBody");
+        const progressBar = document.getElementById("progressBar");
+        const statusDiv = document.getElementById("status");
+        const exportButton = document.getElementById("exportButton");
+        tableBody.innerHTML = "";
+        results = [];
+        progressBar.style.width = "0%";
+        statusDiv.innerText = "No files processed yet.";
+
+        if (!folderInput.files.length) {
+          statusDiv.innerText =
+            'Error: No files selected. Please upload the "<report_name>.Report" or "definition" folder.';
+          return;
+        }
+
+        const totalFiles = folderInput.files.length;
+        statusDiv.innerText = `Processing file 0/${totalFiles}`;
+        const pageMap = new Map(); // Map page folder to page name
+        let filesProcessed = 0;
+
+        // First pass: Collect page names from page.json
+        for (const file of folderInput.files) {
+          filesProcessed++;
+          statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+          progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+          const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+          if (filePath.includes("pages") && file.name === "page.json") {
+            try {
+              const pageText = await file.text();
+              let pageJson;
+              try {
+                pageJson = JSON.parse(pageText);
+              } catch (e) {
+                continue;
+              }
+              const pageName = pageJson.displayName || "Unknown Page";
+              const pageFolder = filePath.split("/").slice(0, -1).join("/");
+              pageMap.set(pageFolder, pageName);
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+
+        // Second pass: Process visual.json files
+        filesProcessed = 0;
+        for (const file of folderInput.files) {
+          filesProcessed++;
+          statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+          progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+          const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+          if (filePath.includes("visuals") && file.name === "visual.json") {
+            try {
+              const visualText = await file.text();
+              let visualJson;
+              try {
+                visualJson = JSON.parse(visualText);
+              } catch (e) {
+                continue;
+              }
+
+              // Get page name from parent folder
+              const pathParts = filePath.split("/");
+              const visualsIndex = pathParts.indexOf("visuals");
+              const pageFolder = pathParts.slice(0, visualsIndex).join("/");
+              const pageName =
+                pageMap.get(pageFolder) ||
+                pathParts[visualsIndex - 1] ||
+                "Unknown Page";
+
+              // Extract visual title and type
+              const title =
+                visualJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(
+                  /'/g,
+                  ""
+                ) ||
+                visualJson.name ||
+                "Unknown Visual";
+              const visualType =
+                visualJson.visual?.visualType || "Unknown Type";
+
+              // Get query projections for column name mapping
+              const valueProjections =
+                visualJson.visual?.query?.queryState?.Values?.projections || [];
+              const projectionMap = new Map();
+              valueProjections.forEach((proj) => {
+                const queryRef = proj.queryRef;
+                const displayName =
+                  proj.displayName || proj.nativeQueryRef || queryRef;
+                projectionMap.set(queryRef, displayName);
+              });
+
+              // Brute-force string search for conditional formatting
+              let foundConditional = false;
+              if (visualText.includes('"Conditional"')) {
+                foundConditional = true;
+                // Split the text into lines for easier processing
+                const lines = visualText
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter((line) => line);
+
+                // Find all instances of "Conditional" and process nearby lines
+                let condTypes = new Set();
+                let condCount = 0;
+                let columnName = "Unknown";
+                let appliedToSet = new Set();
+
+                // Look for "Property" and "Cases" near "Conditional"
+                for (let i = 0; i < lines.length; i++) {
+                  if (lines[i].includes('"Conditional"')) {
+                    let block = [];
+                    let j = i - 10 < 0 ? 0 : i - 10; // Look 10 lines before
+                    let end = i + 20 > lines.length ? lines.length : i + 20; // Look 20 lines after
+                    for (; j < end; j++) {
+                      block.push(lines[j]);
+                    }
+
+                    // Extract column name from "Property" in the block
+                    for (let line of block) {
+                      if (line.includes('"Property"')) {
+                        const match = line.match(/"Property":\s*"([^"]+)"/);
+                        if (match && match[1]) {
+                          columnName = projectionMap.get(match[1]) || match[1];
+                          break;
+                        }
+                      }
+                    }
+
+                    // Count "Cases" entries
+                    const casesMatch = block
+                      .join("")
+                      .match(/"Cases":\s*\[\s*{/g);
+                    const blockCondCount = casesMatch ? casesMatch.length : 0;
+                    condCount += blockCondCount;
+
+                    // Determine condition type
+                    const type = block.join("").includes('"backColor"')
+                      ? "BackColor"
+                      : "FontColor";
+                    condTypes.add(type);
+
+                    // Look for selector.metadata after the Conditional block
+                    let lookAheadEnd = i + 150 > lines.length ? lines.length : i + 150;
+                    for (let k = i; k < lookAheadEnd; k++) {
+                      if (lines[k].includes('"metadata"')) {
+                        const metadataMatch = lines[k].match(/"metadata":\s*"([^"]+)"/);
+                        if (metadataMatch && metadataMatch[1]) {
+                          appliedToSet.add(metadataMatch[1]);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Combine types (e.g., "BackColor, FontColor" if both exist)
+                const condTypeStr =
+                  condTypes.size > 0
+                    ? Array.from(condTypes).join(", ")
+                    : "Conditional";
+                
+                // Combine all "applied to" values
+                const appliedToStr = appliedToSet.size > 0
+                  ? Array.from(appliedToSet).join(", ")
+                  : "Unknown";
+
+                if (condCount > 0 || condTypes.size > 0) {
+                  results.push({
+                    pageName,
+                    visualName: title,
+                    visualType,
+                    columnName,
+                    condCount: condCount || "Unknown",
+                    conditions: condTypeStr,
+                    appliedTo: appliedToStr
+                  });
+                } else {
+                  // Fallback for when "Conditional" is found but no specific rules are parsed
+                  results.push({
+                    pageName,
+                    visualName: title,
+                    visualType,
+                    columnName: "Unknown (Conditional Found)",
+                    condCount: "Unknown",
+                    conditions: "Conditional",
+                    appliedTo: "Unknown"
+                  });
+                }
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+
+        // Remove duplicate rows
+        const uniqueResults = [];
+        const seen = new Set();
+        for (const result of results) {
+          const key = `${result.pageName}|${result.visualName}|${result.visualType}|${result.columnName}|${result.condCount}|${result.conditions}|${result.appliedTo}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            uniqueResults.push(result);
+          }
+        }
+        results = uniqueResults;
+
+        // Populate table
+        if (results.length === 0) {
+          statusDiv.innerText =
+            "No visuals with conditional formatting found. Check if the correct folder was uploaded.";
+        } else {
+          exportButton.disabled = false;
+          statusDiv.innerText = `Processing complete. Found ${results.length} results.`;
+        }
+        results.forEach((result) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+          <td>${result.pageName}</td>
+          <td>${result.visualName}</td>
+          <td>${result.visualType}</td>
+          <td>${result.columnName}</td>
+          <td>${result.condCount}</td>
+          <td>${result.conditions}</td>
+          <td>${result.appliedTo}</td>
+        `;
+          tableBody.appendChild(row);
+        });
+      }
+
+      function exportToCSV() {
+        if (!results.length) {
+          alert("No results to export.");
+          return;
+        }
+        const headers = [
+          "Page Name,Visual Name,Visual Type,Measure Used in the Condition,Number of Conditional Formatting Items,Conditional Formatting Type,Formatting Applied to Field",
+        ];
+        const csvRows = results.map(
+          (result) =>
+            `"${result.pageName.replace(
+              /"/g,
+              '""'
+            )}","${result.visualName.replace(
+              /"/g,
+              '""'
+            )}","${result.visualType.replace(
+              /"/g,
+              '""'
+            )}","${result.columnName.replace(/"/g, '""')}","${
+              result.condCount
+            }","${result.conditions.replace(/"/g, '""')}","${result.appliedTo.replace(/"/g, '""')}"`
+        );
+        const csvContent = headers.concat(csvRows).join("\n");
+        const blob = new Blob([csvContent], { type: "text/csv" });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "conditional_formatting_report.csv";
+        a.click();
+        window.URL.revokeObjectURL(url);
+      }
+    </script>
+  </body>
+</html>
