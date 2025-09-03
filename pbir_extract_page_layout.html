@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PBIP Page Layout Extractor</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-top: 20px;
+      }
+      th,
+      td {
+        border: 1px solid #ddd;
+        padding: 6px;
+        text-align: left;
+        font-size: 12px;
+      }
+      th {
+        background-color: #f2f2f2;
+      }
+      button {
+        padding: 8px;
+        margin: 10px 5px 10px 0;
+      }
+      #progress {
+        margin-top: 10px;
+      }
+      #progressBarContainer {
+        width: 100%;
+        background-color: #f3f3f3;
+        border: 1px solid #ddd;
+        height: 20px;
+        margin-top: 5px;
+      }
+      #progressBar {
+        width: 0%;
+        height: 100%;
+        background-color: #4caf50;
+        transition: width 0.3s;
+      }
+      #status {
+        margin-top: 5px;
+      }
+      svg {
+        border: 1px solid #ccc;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>PBIP Page Layout Extractor</h2>
+    <p>
+      Select the folder containing the page definitions ("{report_name}.Report" or "definition" folder). This folder contains "pages"
+      subfolders and each page folder then has "visuals" subfolders.
+    </p>
+    <input type="file" id="folderInput" webkitdirectory directory multiple />
+    <button onclick="processFolder()">Process PBIP Folder</button>
+    <button onclick="exportToCSV()" disabled id="exportButton">Export Table to CSV</button>
+    <button onclick="downloadAllSVGs()" disabled id="svgButton">Download All SVGs</button>
+
+    <div id="progress">
+      <div id="progressBarContainer">
+        <div id="progressBar"></div>
+      </div>
+      <div id="status">No files processed yet.</div>
+    </div>
+
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Page Name</th>
+          <th>Visual Type</th>
+          <th>Title / GUID</th>
+          <th>Parent Group GUID</th>
+          <th>X</th>
+          <th>Y</th>
+          <th>Z</th>
+          <th>Width</th>
+          <th>Height</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+
+    <div id="svgPreview"></div>
+
+    <script>
+      let results = [];
+      let pageSVGs = {};
+      let colorMap = {};
+      const nonShadedTypes = ["shape", "textbox", "basicShape", "actionButton"];
+
+      function getColorForType(type) {
+        if (nonShadedTypes.includes(type)) return "none";
+        if (!colorMap[type]) {
+          const colors = [
+            "rgba(255, 99, 132, 0.2)",
+            "rgba(54, 162, 235, 0.2)",
+            "rgba(255, 206, 86, 0.2)",
+            "rgba(75, 192, 192, 0.2)",
+            "rgba(153, 102, 255, 0.2)",
+            "rgba(255, 159, 64, 0.2)",
+            "rgba(199, 199, 199, 0.2)",
+          ];
+          const index = Object.keys(colorMap).length % colors.length;
+          colorMap[type] = colors[index];
+        }
+        return colorMap[type];
+      }
+
+      async function processFolder() {
+        const folderInput = document.getElementById("folderInput");
+        const tableBody = document.getElementById("tableBody");
+        const progressBar = document.getElementById("progressBar");
+        const statusDiv = document.getElementById("status");
+        const exportButton = document.getElementById("exportButton");
+        const svgButton = document.getElementById("svgButton");
+        const svgPreview = document.getElementById("svgPreview");
+        tableBody.innerHTML = "";
+        svgPreview.innerHTML = "";
+        results = [];
+        pageSVGs = {};
+        colorMap = {};
+        progressBar.style.width = "0%";
+        statusDiv.innerText = "No files processed yet.";
+
+        if (!folderInput.files.length) {
+          statusDiv.innerText = 'Error: No files selected.';
+          return;
+        }
+
+        const totalFiles = folderInput.files.length;
+        statusDiv.innerText = `Processing file 0/${totalFiles}`;
+
+        let filesProcessed = 0;
+        let pageDefs = {};
+
+        // First pass: collect page definitions
+        for (const file of folderInput.files) {
+          filesProcessed++;
+          statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+          progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+          const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+          if (file.name === "page.json") {
+            try {
+              const txt = await file.text();
+              const pageJson = JSON.parse(txt);
+              const pageFolder = filePath.split("/").slice(0, -1).join("/");
+              pageDefs[pageFolder] = {
+                name: pageJson.displayName,
+                width: pageJson.width,
+                height: pageJson.height,
+              };
+            } catch {}
+          }
+        }
+
+        // Second pass: process visuals
+        filesProcessed = 0;
+        for (const file of folderInput.files) {
+          filesProcessed++;
+          statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+          progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+          const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+          if (file.name === "visual.json") {
+            try {
+              const txt = await file.text();
+              const vJson = JSON.parse(txt);
+              const pathParts = filePath.split("/");
+              const visualsIndex = pathParts.indexOf("visuals");
+              const pageFolder = pathParts.slice(0, visualsIndex).join("/");
+              const pageInfo = pageDefs[pageFolder];
+              if (!pageInfo) continue;
+
+              if (vJson.visualGroup) {
+                if (!pageInfo.groups) pageInfo.groups = [];
+                pageInfo.groups.push({
+                  guid: vJson.name,
+                  x: vJson.position.x,
+                  y: vJson.position.y,
+                  w: vJson.position.width,
+                  h: vJson.position.height,
+                  displayName: vJson.visualGroup.displayName || "Group",
+                });
+              } else {
+                if (!pageInfo.visuals) pageInfo.visuals = [];
+                const title = extractTitle(vJson);
+                const fullTitle = `${title}/${vJson.name}`;
+                pageInfo.visuals.push({
+                  guid: vJson.name,
+                  type: vJson.visual?.visualType || "Unknown",
+                  title: fullTitle,
+                  x: vJson.position.x,
+                  y: vJson.position.y,
+                  w: vJson.position.width,
+                  h: vJson.position.height,
+                  z: vJson.position.z || 0,
+                  parent: vJson.parentGroupName || "",
+                });
+              }
+            } catch {}
+          }
+        }
+
+        // Build results and SVGs
+        let firstPage = true;
+        for (const [pageFolder, pageInfo] of Object.entries(pageDefs)) {
+          if (!pageInfo.visuals) continue;
+
+          if (pageInfo.groups) {
+            const gmap = {};
+            pageInfo.groups.forEach((g) => (gmap[g.guid] = g));
+            pageInfo.visuals.forEach((v) => {
+              if (v.parent && gmap[v.parent]) {
+                v.x += gmap[v.parent].x;
+                v.y += gmap[v.parent].y;
+              }
+            });
+          }
+
+          pageInfo.visuals.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+          pageInfo.visuals.forEach((v, idx) => (v.id = idx + 1));
+
+          pageInfo.visuals.forEach((v) => {
+            results.push({
+              id: v.id,
+              page: pageInfo.name,
+              type: v.type,
+              title: v.title,
+              parent: v.parent,
+              x: v.x.toFixed(1),
+              y: v.y.toFixed(1),
+              z: v.z,
+              w: v.w.toFixed(1),
+              h: v.h.toFixed(1),
+            });
+          });
+
+          pageSVGs[pageInfo.name] = buildPageSVG(pageInfo);
+
+          if (firstPage) {
+            document.getElementById("svgPreview").innerHTML =
+              `<h3>Example Page Layout: ${pageInfo.name}</h3>` + pageSVGs[pageInfo.name];
+            firstPage = false;
+          }
+        }
+
+        results.forEach((r) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `<td>${r.id}</td><td>${r.page}</td><td>${r.type}</td><td>${r.title}</td><td>${r.parent}</td><td>${r.x}</td><td>${r.y}</td><td>${r.z}</td><td>${r.w}</td><td>${r.h}</td>`;
+          tableBody.appendChild(row);
+        });
+
+        exportButton.disabled = false;
+        svgButton.disabled = true;
+        if (Object.keys(pageSVGs).length > 0) svgButton.disabled = false;
+        statusDiv.innerText = `Processing complete. Found ${results.length} visuals.`;
+      }
+
+      function extractTitle(vJson) {
+        try {
+          return (
+            vJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(/'/g, "") || ""
+          );
+        } catch {
+          return "";
+        }
+      }
+
+      function buildPageSVG(pageInfo) {
+        const w = pageInfo.width;
+        const h = pageInfo.height;
+        let svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'>`;
+
+        if (pageInfo.groups) {
+          pageInfo.groups.forEach((g) => {
+            svg += `<rect x='${g.x}' y='${g.y}' width='${g.w}' height='${g.h}' stroke='gray' stroke-dasharray='6,3' fill='none'/>`;
+          });
+        }
+
+        let seen = new Set();
+        pageInfo.visuals.forEach((v) => {
+          if (seen.has(v)) return;
+          const stack = pageInfo.visuals.filter(
+            (o) => o.x === v.x && o.y === v.y && o.w === v.w && o.h === v.h
+          );
+          stack.forEach((s) => seen.add(s));
+          const ids = stack.map((s) => s.id).join(",");
+          const label = stack.length > 1 ? ids : `${v.id} (${v.type})`;
+          const fill = getColorForType(v.type);
+          svg += `<rect x='${v.x}' y='${v.y}' width='${v.w}' height='${v.h}' stroke='black' fill='${fill}'/>`;
+          svg += `<text x='${v.x + v.w / 2}' y='${v.y + v.h / 2}' text-anchor='middle' font-size='10'>${label}</text>`;
+        });
+
+        svg += `</svg>`;
+        return svg;
+      }
+
+      function exportToCSV() {
+        if (!results.length) return;
+        const headers = [
+          "ID,Page Name,Visual Type,Title/Guid,Parent Group GUID,X,Y,Z,Width,Height",
+        ];
+        const csvRows = results.map(
+          (r) =>
+            `${r.id},"${r.page}","${r.type}","${r.title}","${r.parent}",${r.x},${r.y},${r.z},${r.w},${r.h}`
+        );
+        const csvContent = headers.concat(csvRows).join("\n");
+        const blob = new Blob([csvContent], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "page_layout_report.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function downloadAllSVGs() {
+        for (const [pageName, svg] of Object.entries(pageSVGs)) {
+          const blob = new Blob([svg], { type: "image/svg+xml" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `${pageName.replace(/\s+/g, "_")}.svg`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      }
+    </script>
+  </body>
+</html>
