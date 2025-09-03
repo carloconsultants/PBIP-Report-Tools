@@ -50,6 +50,21 @@
         border: 1px solid #ccc;
         margin-top: 20px;
       }
+      .legend {
+        margin-top: 20px;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 4px;
+        font-size: 12px;
+      }
+      .legend-color {
+        width: 20px;
+        height: 12px;
+        margin-right: 8px;
+        border: 1px solid #000;
+      }
     </style>
   </head>
   <body>
@@ -88,12 +103,14 @@
       <tbody id="tableBody"></tbody>
     </table>
 
+    <div id="legend" class="legend"></div>
     <div id="svgPreview"></div>
 
     <script>
       let results = [];
       let pageSVGs = {};
       let colorMap = {};
+      let timestamp = "";
       const nonShadedTypes = ["shape", "textbox", "basicShape", "actionButton"];
 
       function getColorForType(type) {
@@ -114,6 +131,19 @@
         return colorMap[type];
       }
 
+      function renderLegend() {
+        const legendDiv = document.getElementById("legend");
+        legendDiv.innerHTML = "<h3>Legend</h3>";
+        Object.entries(colorMap).forEach(([type, color]) => {
+          if (color !== "none") {
+            const item = document.createElement("div");
+            item.className = "legend-item";
+            item.innerHTML = `<div class="legend-color" style="background:${color}"></div>${type}`;
+            legendDiv.appendChild(item);
+          }
+        });
+      }
+
       async function processFolder() {
         const folderInput = document.getElementById("folderInput");
         const tableBody = document.getElementById("tableBody");
@@ -129,6 +159,7 @@
         colorMap = {};
         progressBar.style.width = "0%";
         statusDiv.innerText = "No files processed yet.";
+        timestamp = new Date().toISOString();
 
         if (!folderInput.files.length) {
           statusDiv.innerText = 'Error: No files selected.';
@@ -263,6 +294,8 @@
         svgButton.disabled = true;
         if (Object.keys(pageSVGs).length > 0) svgButton.disabled = false;
         statusDiv.innerText = `Processing complete. Found ${results.length} visuals.`;
+
+        renderLegend();
       }
 
       function extractTitle(vJson) {
@@ -277,15 +310,21 @@
 
       function buildPageSVG(pageInfo) {
         const w = pageInfo.width;
-        const h = pageInfo.height;
+        const h = pageInfo.height + 40; // extra space for header
         let svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'>`;
 
+        // Header bar
+        svg += `<rect x='0' y='0' width='${w}' height='40' fill='black'/>`;
+        svg += `<text x='${w / 2}' y='25' text-anchor='middle' font-size='20' fill='white' font-weight='bold'>${pageInfo.name} - ${timestamp}</text>`;
+
+        // Groups
         if (pageInfo.groups) {
           pageInfo.groups.forEach((g) => {
-            svg += `<rect x='${g.x}' y='${g.y}' width='${g.w}' height='${g.h}' stroke='gray' stroke-dasharray='6,3' fill='none'/>`;
+            svg += `<rect x='${g.x}' y='${g.y + 40}' width='${g.w}' height='${g.h}' stroke='gray' stroke-dasharray='6,3' fill='none'/>`;
           });
         }
 
+        // Visuals
         let seen = new Set();
         pageInfo.visuals.forEach((v) => {
           if (seen.has(v)) return;
@@ -296,8 +335,8 @@
           const ids = stack.map((s) => s.id).join(",");
           const label = stack.length > 1 ? ids : `${v.id} (${v.type})`;
           const fill = getColorForType(v.type);
-          svg += `<rect x='${v.x}' y='${v.y}' width='${v.w}' height='${v.h}' stroke='black' fill='${fill}'/>`;
-          svg += `<text x='${v.x + v.w / 2}' y='${v.y + v.h / 2}' text-anchor='middle' font-size='10'>${label}</text>`;
+          svg += `<rect x='${v.x}' y='${v.y + 40}' width='${v.w}' height='${v.h}' stroke='black' fill='${fill}'/>`;
+          svg += `<text x='${v.x + v.w / 2}' y='${v.y + 40 + v.h / 2}' text-anchor='middle' font-size='10'>${label}</text>`;
         });
 
         svg += `</svg>`;
