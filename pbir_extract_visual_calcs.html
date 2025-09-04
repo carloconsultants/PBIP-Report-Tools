@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PBIP Visual Calc Extractor</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 12px; }
+    th { background-color: #f2f2f2; }
+    button { padding: 8px; margin: 10px 5px 10px 0; }
+    #progress { margin-top: 10px; }
+    #progressBarContainer { width: 100%; background-color: #f3f3f3; border: 1px solid #ddd; height: 20px; margin-top: 5px; }
+    #progressBar { width: 0%; height: 100%; background-color: #4caf50; transition: width 0.3s; }
+    #status { margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <h2>PBIP Visual Calculation Extractor</h2>
+  <p>Select the folder containing the PBIP "pages" subfolders with "visuals".</p>
+  <input type="file" id="folderInput" webkitdirectory directory multiple />
+  <button onclick="processFolder()">Process PBIP Folder</button>
+  <button onclick="exportToCSV()" disabled id="exportButton">Export Table to CSV</button>
+
+  <div id="progress">
+    <div id="progressBarContainer"><div id="progressBar"></div></div>
+    <div id="status">No files processed yet.</div>
+  </div>
+
+  <table id="resultsTable">
+    <thead>
+      <tr>
+        <th>Page Name</th>
+        <th>Visual Type</th>
+        <th>Title / GUID</th>
+        <th>Visual Calc Name</th>
+        <th>Visual Calc Expression</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+
+  <script>
+    let results = [];
+
+    async function processFolder() {
+      const folderInput = document.getElementById("folderInput");
+      const tableBody = document.getElementById("tableBody");
+      const progressBar = document.getElementById("progressBar");
+      const statusDiv = document.getElementById("status");
+      const exportButton = document.getElementById("exportButton");
+
+      tableBody.innerHTML = "";
+      results = [];
+      progressBar.style.width = "0%";
+      statusDiv.innerText = "No files processed yet.";
+
+      if (!folderInput.files.length) {
+        statusDiv.innerText = 'Error: No files selected.';
+        return;
+      }
+
+      const totalFiles = folderInput.files.length;
+      statusDiv.innerText = `Processing file 0/${totalFiles}`;
+
+      let filesProcessed = 0;
+      let pageDefs = {};
+
+      // First pass: collect page definitions
+      for (const file of folderInput.files) {
+        filesProcessed++;
+        statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+        progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+        const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+        if (file.name === "page.json") {
+          try {
+            const txt = await file.text();
+            const pageJson = JSON.parse(txt);
+            const pageFolder = filePath.split("/").slice(0, -1).join("/");
+            pageDefs[pageFolder] = { name: pageJson.displayName };
+          } catch {}
+        }
+      }
+
+      // Second pass: process visuals
+      filesProcessed = 0;
+      for (const file of folderInput.files) {
+        filesProcessed++;
+        statusDiv.innerText = `Processing file ${filesProcessed}/${totalFiles}`;
+        progressBar.style.width = `${(filesProcessed / totalFiles) * 100}%`;
+
+        const filePath = file.webkitRelativePath.replace(/\\/g, "/");
+        if (file.name === "visual.json") {
+          try {
+            const txt = await file.text();
+            const vJson = JSON.parse(txt);
+            const pathParts = filePath.split("/");
+            const visualsIndex = pathParts.indexOf("visuals");
+            const pageFolder = pathParts.slice(0, visualsIndex).join("/");
+            const pageInfo = pageDefs[pageFolder];
+            if (!pageInfo) continue;
+
+            const title = extractTitle(vJson);
+            const fullTitle = `${title}/${vJson.name}`;
+            const visualType = vJson.visual?.visualType || "Unknown";
+
+            // Look for NativeVisualCalculation fields
+            const projections = vJson.visual?.query?.queryState?.Values?.projections || [];
+            for (const proj of projections) {
+              const nvc = proj.field?.NativeVisualCalculation;
+              if (nvc) {
+                results.push({
+                  page: pageInfo.name,
+                  type: visualType,
+                  title: fullTitle,
+                  calcName: nvc.Name || "",
+                  calcExpr: nvc.Expression || ""
+                });
+              }
+            }
+          } catch {}
+        }
+      }
+
+      // Build table
+      results.forEach((r) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${r.page}</td><td>${r.type}</td><td>${r.title}</td><td>${r.calcName}</td><td>${r.calcExpr}</td>`;
+        tableBody.appendChild(row);
+      });
+
+      exportButton.disabled = results.length === 0;
+      statusDiv.innerText = `Processing complete. Found ${results.length} visual calcs.`;
+    }
+
+    function extractTitle(vJson) {
+      try {
+        return (
+          vJson.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value?.replace(/'/g, "") || ""
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function exportToCSV() {
+      if (!results.length) return;
+      const headers = [
+        "Page Name,Visual Type,Title/Guid,Visual Calc Name,Visual Calc Expression"
+      ];
+      const csvRows = results.map(
+        (r) => `"${r.page}","${r.type}","${r.title}","${r.calcName}","${r.calcExpr}"`
+      );
+      const csvContent = headers.concat(csvRows).join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "visual_calcs_report.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>
